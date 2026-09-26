@@ -1,0 +1,617 @@
+import {
+  existsSync,
+  readFileSync,
+  writeFileSync
+} from "node:fs";
+
+import {
+  createInterface
+} from "node:readline/promises";
+
+import {
+  stdin as input,
+  stdout as output
+} from "node:process";
+
+// ============================================================
+// PERSONAGEM
+// ============================================================
+
+class Personagem {
+  private vida: number;
+  private experiencia = 0;
+
+  constructor(
+    public readonly nome: string,
+    private readonly vidaMaxima: number,
+    private readonly dano: number
+  ) {
+    this.vida = vidaMaxima;
+  }
+
+  getVida(): number {
+    return this.vida;
+  }
+
+  getVidaMaxima(): number {
+    return this.vidaMaxima;
+  }
+
+  getDano(): number {
+    return this.dano;
+  }
+
+  getExperiencia(): number {
+    return this.experiencia;
+  }
+
+  getNivel(): number {
+    if (this.experiencia >= 500) return 4;
+    if (this.experiencia >= 250) return 3;
+    if (this.experiencia >= 100) return 2;
+
+    return 1;
+  }
+
+  estaVivo(): boolean {
+    return this.vida > 0;
+  }
+
+  atacar(outro: Personagem): void {
+    if (!this.estaVivo()) {
+      console.log(
+        `${this.nome} está morto e não pode atacar.`
+      );
+      return;
+    }
+
+    if (!outro.estaVivo()) {
+      console.log(
+        `${outro.nome} já está morto.`
+      );
+      return;
+    }
+
+    outro.receberDano(this.dano);
+
+    console.log(
+      `${this.nome} atacou ${outro.nome} ` +
+      `causando ${this.dano} de dano.`
+    );
+  }
+
+  receberDano(dano: number): void {
+    this.vida = Math.max(
+      0,
+      this.vida - dano
+    );
+  }
+
+  curar(quantidade: number): void {
+    this.vida = Math.min(
+      this.vidaMaxima,
+      this.vida + quantidade
+    );
+  }
+
+  ganharExperiencia(quantidade: number): void {
+    this.experiencia += quantidade;
+
+    console.log(
+      `${this.nome} ganhou ${quantidade} XP.`
+    );
+  }
+
+  restaurarEstado(
+    vida: number,
+    experiencia: number
+  ): void {
+    this.vida = vida;
+    this.experiencia = experiencia;
+  }
+}
+
+// Repository
+
+interface JogoRepository {
+  salvar(jogo: Jogo, id: number): void;
+  carregar(id: number): Jogo;
+  listarSalvos(): number[];
+  existe(): boolean;
+}
+
+// Dados persistidos
+
+interface PersonagemData {
+  nome: string
+  vida: number
+  vidaMaxima: number
+  dano: number
+  experiencia: number
+}
+
+interface JogoData {
+  personagens: PersonagemData[]
+}
+
+// JSON repository
+
+class JsonJogoRepository implements JogoRepository {
+  constructor(
+    private readonly arquivo: string
+  ) {}
+
+  existe(): boolean {
+    return existsSync(this.arquivo)
+  }
+
+  private lerDadosDoArquivo(): JogoData[] {
+    if (!this.existe()) {
+      return [];
+    }
+    
+    const json = readFileSync(this.arquivo, "utf-8");
+    try {
+      return JSON.parse(json);
+    } catch {
+      return [];
+    }
+  }
+
+  listarSalvos(): number[] {
+    const todosOsJogos = this.lerDadosDoArquivo();
+    const indices: number[] = [];
+    
+    for (let i = 0; i < todosOsJogos.length; i++) {
+      if (todosOsJogos[i]) {
+        indices.push(i);
+      }
+    }
+    return indices;
+  }
+
+  salvar(jogo: Jogo, id: number): void {
+    const todosOsJogos = this.lerDadosDoArquivo();
+
+    const dados: JogoData = {
+      personagens: jogo.listarPersonagens()
+        .map(personagem => ({
+          nome: personagem.nome,
+          vida: personagem.getVida(),
+          vidaMaxima: personagem.getVidaMaxima(),
+          dano: personagem.getDano(),
+          experiencia: personagem.getExperiencia()
+        }))
+    }
+
+    todosOsJogos[id] = dados;
+
+    const json = JSON.stringify(
+      todosOsJogos,
+      null,
+      2
+    )
+
+    writeFileSync(
+      this.arquivo,
+      json,
+      "utf-8"
+    )
+  }
+
+  carregar(id: number): Jogo {
+    const todosOsJogos = this.lerDadosDoArquivo();
+    
+    const dados = todosOsJogos[id];
+
+    if (!dados) {
+      throw new Error(`Nenhum jogo salvo encontrado no slot ${id}.`);
+    }
+
+    const jogo = new Jogo()
+
+    for (const personagemData of dados.personagens) {
+      const personagem = new Personagem(
+        personagemData.nome,
+        personagemData.vidaMaxima,
+        personagemData.dano
+      )
+
+      personagem.restaurarEstado(
+        personagemData.vida,
+        personagemData.experiencia
+      )
+
+      jogo.adicionarPersonagem(personagem)
+    }
+
+    return jogo
+  }
+}
+
+// ============================================================
+// JOGO
+// ============================================================
+
+class Jogo {
+  private readonly personagens: Personagem[] = [];
+
+  adicionarPersonagem(
+    personagem: Personagem
+  ): void {
+    this.personagens.push(personagem);
+  }
+
+  listarPersonagens(): readonly Personagem[] {
+    return [...this.personagens];
+  }
+
+  encontrarPersonagem(
+    nome: string
+  ): Personagem | undefined {
+    return this.personagens.find(
+      personagem =>
+        personagem.nome === nome
+    );
+  }
+}
+
+// ============================================================
+// INTERFACE DO JOGO
+// ============================================================
+
+class InterfaceJogo {
+    private idAtual: number = -1;
+
+  constructor(
+    private readonly readline:
+      ReturnType<typeof createInterface>,
+
+    private readonly repository: JogoRepository
+  ) {}
+
+  async executar(): Promise<void> {
+    let executando = true;
+
+    while (executando) {
+      console.log(`
+==============================
+             RPG
+==============================
+
+1. Nova partida
+2. Carregar partida
+3. Sair
+`);
+
+      const opcao =
+        await this.readline.question(
+          "Escolha uma opção: "
+        );
+
+      switch (opcao) {
+        case "1":
+          await this.novaPartida();
+          break;
+
+        case "2":
+          await this.carregarPartida();
+          break;
+
+        case "3":
+          executando = false;
+          console.log(
+            "Até a próxima!"
+          );
+          break;
+
+        default:
+          console.log(
+            "Opção inválida."
+          );
+      }
+    }
+  }
+
+  private async novaPartida(): Promise<void> {
+    console.log(`
+==============================
+         NOVA PARTIDA
+==============================
+`);
+
+    const jogo = new Jogo();
+
+    const aragorn =
+      new Personagem(
+        "Aragorn",
+        100,
+        20
+      );
+
+    const gandalf =
+      new Personagem(
+        "Gandalf",
+        80,
+        30
+      );
+
+    jogo.adicionarPersonagem(aragorn);
+    jogo.adicionarPersonagem(gandalf);
+
+    const salvos = this.repository.existe() 
+      ? this.repository.listarSalvos() 
+      : [];
+    
+    this.idAtual = salvos.length > 0 ? Math.max(...salvos) + 1 : 0;
+
+    console.log(`Nova partida criada! (Slot de gravação: ${this.idAtual})`);
+
+    await this.executarPartida(jogo);
+  }
+
+  private async carregarPartida(): Promise<void> {
+    if (!this.repository.existe() || this.repository.listarSalvos().length === 0) {
+      console.log("\nNenhuma partida salva foi encontrada.");
+      return;
+    }
+
+    const salvos = this.repository.listarSalvos();
+    console.log(`\nSlots de jogos salvos disponíveis: ${salvos.join(", ")}`);
+
+    const opcaoTexto = await this.readline.question(
+      "Digite o número do slot que deseja carregar: "
+    );
+    const idEscolhido = Number(opcaoTexto);
+
+    if (!salvos.includes(idEscolhido)) {
+      console.log("\nSlot inválido ou não encontrado.");
+      return;
+    }
+
+    try {
+      const jogo = this.repository.carregar(idEscolhido);
+      this.idAtual = idEscolhido;
+
+      console.log(
+        `\nPartida carregada com sucesso do slot ${this.idAtual}!`
+      );
+
+      await this.executarPartida(jogo);
+    } catch (erro) {
+      console.log(
+        "\nNão foi possível carregar a partida."
+      );
+
+      console.error(erro);
+    }
+  }
+
+  private async executarPartida(
+    jogo: Jogo
+  ): Promise<void> {
+    let continuar = true;
+
+    while (continuar) {
+      console.log(`
+==============================
+           PARTIDA
+==============================
+
+1. Listar personagens
+2. Atacar
+3. Ganhar experiência
+4. Curar
+5. Salvar partida
+6. Voltar
+`);
+
+      const opcao =
+        await this.readline.question(
+          "Escolha uma opção: "
+        );
+
+      switch (opcao) {
+        case "1":
+          this.listarPersonagens(jogo);
+          break;
+
+        case "2":
+          await this.atacar(jogo);
+          break;
+
+        case "3":
+          await this.ganharExperiencia(jogo);
+          break;
+
+        case "4":
+          await this.curar(jogo);
+          break;
+
+        case "5":
+          this.repository.salvar(jogo, this.idAtual);
+
+          console.log(
+            `\nPartida salva! slot ${this.idAtual}`
+          );
+
+          break;
+
+        case "6":
+          continuar = false;
+          break;
+
+        default:
+          console.log(
+            "Opção inválida."
+          );
+      }
+    }
+  }
+
+  private listarPersonagens(
+    jogo: Jogo
+  ): void {
+    console.log(
+      "\nPersonagens:"
+    );
+
+    for (
+      const personagem of
+      jogo.listarPersonagens()
+    ) {
+      console.log(
+        `- ${personagem.nome} | ` +
+        `Vida: ${personagem.getVida()}/` +
+        `${personagem.getVidaMaxima()} | ` +
+        `Nível: ${personagem.getNivel()} | ` +
+        `XP: ${personagem.getExperiencia()}`
+      );
+    }
+  }
+
+  private async atacar(
+    jogo: Jogo
+  ): Promise<void> {
+    const atacanteNome =
+      await this.readline.question(
+        "Quem vai atacar? "
+      );
+
+    const alvoNome =
+      await this.readline.question(
+        "Quem será atacado? "
+      );
+
+    const atacante =
+      jogo.encontrarPersonagem(
+        atacanteNome
+      );
+
+    const alvo =
+      jogo.encontrarPersonagem(
+        alvoNome
+      );
+
+    if (!atacante || !alvo) {
+      console.log(
+        "Personagem não encontrado."
+      );
+
+      return;
+    }
+
+    atacante.atacar(alvo);
+  }
+
+  private async ganharExperiencia(
+    jogo: Jogo
+  ): Promise<void> {
+    const nome =
+      await this.readline.question(
+        "Personagem: "
+      );
+
+    const personagem =
+      jogo.encontrarPersonagem(nome);
+
+    if (!personagem) {
+      console.log(
+        "Personagem não encontrado."
+      );
+
+      return;
+    }
+
+    const quantidadeTexto =
+      await this.readline.question(
+        "Quantidade de XP: "
+      );
+
+    const quantidade =
+      Number(quantidadeTexto);
+
+    if (
+      !Number.isFinite(quantidade) ||
+      quantidade <= 0
+    ) {
+      console.log(
+        "Quantidade inválida."
+      );
+
+      return;
+    }
+
+    personagem.ganharExperiencia(
+      quantidade
+    );
+  }
+
+  private async curar(
+    jogo: Jogo
+  ): Promise<void> {
+    const nome =
+      await this.readline.question(
+        "Personagem: "
+      );
+
+    const personagem =
+      jogo.encontrarPersonagem(nome);
+
+    if (!personagem) {
+      console.log(
+        "Personagem não encontrado."
+      );
+
+      return;
+    }
+
+    const quantidadeTexto =
+      await this.readline.question(
+        "Quantidade de cura: "
+      );
+
+    const quantidade =
+      Number(quantidadeTexto);
+
+    if (
+      !Number.isFinite(quantidade) ||
+      quantidade <= 0
+    ) {
+      console.log(
+        "Quantidade inválida."
+      );
+
+      return;
+    }
+
+    personagem.curar(quantidade);
+
+    console.log(
+      `${personagem.nome} agora possui ` +
+      `${personagem.getVida()} HP.`
+    );
+  }
+}
+
+// ============================================================
+// PROGRAMA
+// ============================================================
+
+const readline =
+  createInterface({
+    input,
+    output
+  });
+
+const repository = new JsonJogoRepository("jogo.json");
+
+const interfaceJogo =
+  new InterfaceJogo(
+    readline,
+    repository
+  );
+
+await interfaceJogo.executar();
+
+
